@@ -1,5 +1,7 @@
 # Structural Gate — Deterministic Contract Boundary
 
+![CI](https://github.com/manasaranjanbehera/llm-structural-gate/actions/workflows/ci.yml/badge.svg)
+
 Minimal runnable prototype that enforces **structural constraint as a deterministic contract boundary**: no output crosses the boundary unless it is valid against the schema. The schema is the source of truth; the LLM is simulated as an untrusted probabilistic client. This project implements **structural validation only** (no semantic validation, retries, business logic, or resilience modeling).
 
 **Strict structural hardening:**
