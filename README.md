@@ -1,84 +1,120 @@
-# Structural Gate — Deterministic Contract Boundary
+# llm-structural-gate
 
 ![CI](https://github.com/manasaranjanbehera/llm-structural-gate/actions/workflows/ci.yml/badge.svg)
 
-A minimal runnable prototype demonstrating **structural constraint as a deterministic contract boundary**: no output crosses the boundary unless it is valid against the schema. The schema is the source of truth; the LLM is simulated as an untrusted probabilistic client. This project implements **structural validation only** (no semantic validation, retries, business logic, or resilience modeling).
+A minimal prototype that implements a **Structural Constraint Gate** for LLM outputs: a deterministic contract boundary between probabilistic generation and downstream application logic.
 
-**Strict structural hardening:**
+---
 
-- **Strict structural validation:** Validation enforces strict type compliance (no coercion).
-- **No type coercion**: string→float and int→float (when strict float is required) are rejected; types must match the schema exactly.
-- **Exact enum matching**: enum values are matched exactly and case-sensitively (e.g. `"Positive"` is rejected; only `"positive"` is accepted).
-- **Unknown simulator modes are rejected**: if an unknown `mode` is passed, the API returns 400 and does not fall back to valid output.
+## Problem Statement
 
-## Technology Stack
+LLM outputs are probabilistic. Tokens are sampled; formatting and structure vary. Downstream systems often assume a fixed contract (e.g. JSON with required fields and types). Using raw LLM output as if it were a deterministic API response leads to parse failures, type errors, and undefined behavior.
 
-- Python 3.11+
-- FastAPI
-- Pydantic v2
-- Uvicorn
-- Structlog (structured logging)
-- Pytest
+A **Structural Constraint Gate** is a validation layer that accepts or rejects output strictly against a schema. Only well-formed, schema-compliant data crosses the boundary. Rejected output does not reach the rest of the system.
 
-No LangChain, database, or external LLM. LLM output is simulated locally.
+This is **structural validation**, not semantic safety filtering. The gate checks shape, types, required fields, and allowed values. It does not evaluate truthfulness, intent, or business rules. A structurally valid response can still be wrong or misleading.
 
-## Project Structure
+---
+
+## What This Project Does
+
+- Validates raw LLM output (here, simulated as JSON strings) against a single fixed schema.
+- Enforces **strict** structural rules: no type coercion (e.g. string or int to float is rejected), exact enum matching (case-sensitive), no extra fields.
+- Returns either the validated structured object (accept) or a rejection with reason (reject). No silent correction, retries, or auto-fix.
+- This project intentionally avoids semantic judgment, business rule validation, or auto-correction. It enforces structure only.
+
+
+The prototype uses a simulated LLM client (no external API). The validation path is local and deterministic.
+
+---
+
+## How It Works
+
+1. Raw output (e.g. from an LLM) is passed as a string.
+2. The string is parsed as JSON. Parse failure → reject.
+3. The parsed object is validated against the schema. Validation failure → reject.
+4. Success yields a typed instance; failure yields an error reason.
+
+Core API: `validate(raw_output: str) → ValidationSuccess | ValidationFailure`.
+
+---
+
+## Architecture Overview
 
 ```
-app/
-├── main.py           # API and /invoke endpoint
-├── llm_simulator.py  # Simulated client output by mode
-├── models.py         # SentimentResult schema
-├── validator.py      # validate(raw_output: str) → ValidationSuccess | ValidationFailure
-└── logging_config.py # Structlog setup
-tests/
-├── test_structural_gate.py
-└── test_strict_structural_gate.py
-requirements.txt
-README.md
+    User Input
+         │
+         ▼
+   Prompt Builder
+         │
+         ▼
+        LLM
+         │
+         ▼
+   ┌─────────────────────────────────────────┐
+   │  Structural Gate                        │
+   │  (Deterministic Contract Boundary)      │
+   │  Schema Validation Layer                │
+   └─────────────────────────────────────────┘
+         │
+         ▼
+   Accept / Reject
+         │
+         ▼
+   Downstream System
 ```
 
-This prototype demonstrates a single fixed schema structural gate. Schema parameterization is intentionally out of scope.
+The Structural Gate is the single place where output is checked against the contract. Nothing that fails validation reaches the downstream system.
 
-## Schema (Strict)
+---
 
-**SentimentResult** — all fields required, `additionalProperties` forbidden:
+## Structural Constraint Examples
 
-| Field       | Type   | Constraint                          |
-|------------|--------|-------------------------------------|
-| sentiment  | enum   | `"positive"` \| `"negative"` \| `"neutral"` |
-| confidence | float  | 0.0 ≤ value ≤ 1.0                   |
-| summary    | string | minLength = 5                       |
+### Schema (fixed in this prototype)
 
-Enforced with Pydantic `ConfigDict(extra="forbid")` and strict float (no string/int coercion); exact types and enum values required.
+**SentimentResult** — all fields required, no extra properties:
 
-## API
+| Field       | Type  | Constraint                                      |
+|------------|-------|--------------------------------------------------|
+| sentiment  | enum  | `"positive"` \| `"negative"` \| `"neutral"`      |
+| confidence | float | 0.0 ≤ value ≤ 1.0 (strict float; no int/string)  |
+| summary    | string| minLength 5                                     |
 
-Validation is `validate(raw_output: str)` → `ValidationSuccess` | `ValidationFailure` against the **fixed SentimentResult schema**; the prototype does not accept a schema parameter. API request body models (e.g. `InvokeRequest` for `/invoke`) are defined in `main.py`.
-
-**POST /invoke**
-
-Request body:
+### Example: passes validation
 
 ```json
-{ "mode": "VALID" }
+{"sentiment": "positive", "confidence": 0.92, "summary": "Customer is happy"}
 ```
 
-Supported modes: `VALID`, `ENUM_VIOLATION`, `EXTRA_FIELD`, `MISSING_FIELD`, `NUMERIC_BOUND_VIOLATION`, `MALFORMED_JSON`, `STRING_INSTEAD_OF_FLOAT`, `INT_INSTEAD_OF_FLOAT`, `ENUM_CASE_VARIATION`, `SEMANTICALLY_WRONG`. Any other mode returns 400 (unknown mode).
+### Example: fails validation
 
-- **If validation passes:** response 200 with the validated structured object.
-- **If validation fails:** response 400 with:
+- Malformed JSON: `{"sentiment": "positive" "confidence": 0.92, ...}` → reject (parse error).
+- Wrong type: `"confidence": "0.92"` (string) or `"confidence": 1` (int) → reject (strict float).
+- Enum: `"sentiment": "Positive"` or `"positve"` → reject (exact enum only).
+- Extra field: `"reasoning": "..."` → reject (additional properties forbidden).
+- Missing field: no `summary` → reject.
 
-```json
-{
-  "status": "rejected",
-  "reason": "<validation error message>"
-}
+### Python usage
+
+```python
+from app.validator import validate
+
+raw = '{"sentiment": "positive", "confidence": 0.92, "summary": "Customer is happy"}'
+result = validate(raw)
+
+if hasattr(result, "instance"):
+    # Accepted: use result.instance (typed SentimentResult)
+    print(result.instance.model_dump())
+else:
+    # Rejected: result.reason describes the failure
+    print("Rejected:", result.reason)
 ```
 
-No silent correction, retries, or auto-fix.
+---
 
-## Run
+## Example Usage
+
+### Run the API
 
 ```bash
 python -m venv .venv
@@ -89,91 +125,22 @@ uvicorn app.main:app --reload
 
 Server: `http://127.0.0.1:8000`
 
-## Examples (with curl)
+### Invoke (simulator modes)
 
-Assume the server is running at `http://127.0.0.1:8000`.
+**POST /invoke** body: `{"mode": "VALID"}`.
 
-### Example 1 — Valid Structure
+Modes include: `VALID`, `ENUM_VIOLATION`, `EXTRA_FIELD`, `MISSING_FIELD`, `NUMERIC_BOUND_VIOLATION`, `MALFORMED_JSON`, `STRING_INSTEAD_OF_FLOAT`, `INT_INSTEAD_OF_FLOAT`, `ENUM_CASE_VARIATION`, `SEMANTICALLY_WRONG`. Any other `mode` returns 400 (unknown mode).
 
-**Expected: ACCEPTED**
-
-```bash
-curl -s -X POST http://127.0.0.1:8000/invoke \
-  -H "Content-Type: application/json" \
-  -d '{"mode": "VALID"}'
-```
-
-Expected response (200): `{"sentiment":"positive","confidence":0.92,"summary":"Customer is happy"}`
-
----
-
-### Example 2 — Enum Typo
-
-**Expected: REJECTED**
+- **Validation passes:** 200 with the validated JSON.
+- **Validation fails:** 400 with `{"status": "rejected", "reason": "<message>"}`.
 
 ```bash
-curl -s -X POST http://127.0.0.1:8000/invoke \
-  -H "Content-Type: application/json" \
-  -d '{"mode": "ENUM_VIOLATION"}'
+# Accepted
+curl -s -X POST http://127.0.0.1:8000/invoke -H "Content-Type: application/json" -d '{"mode": "VALID"}'
+
+# Rejected (e.g. enum typo)
+curl -s -X POST http://127.0.0.1:8000/invoke -H "Content-Type: application/json" -d '{"mode": "ENUM_VIOLATION"}'
 ```
-
-Expected response (400): `{"status":"rejected","reason":"..."}` (enum / input constraint message).
-
----
-
-### Example 3 — Extra Field
-
-**Expected: REJECTED** (additionalProperties equivalent via forbid)
-
-```bash
-curl -s -X POST http://127.0.0.1:8000/invoke \
-  -H "Content-Type: application/json" \
-  -d '{"mode": "EXTRA_FIELD"}'
-```
-
-Expected response (400): `{"status":"rejected","reason":"..."}` (extra fields not allowed).
-
----
-
-### Example 4 — Missing Required Field
-
-**Expected: REJECTED**
-
-```bash
-curl -s -X POST http://127.0.0.1:8000/invoke \
-  -H "Content-Type: application/json" \
-  -d '{"mode": "MISSING_FIELD"}'
-```
-
-Expected response (400): `{"status":"rejected","reason":"..."}` (missing field).
-
----
-
-### Example 5 — Numeric Bound Violation
-
-**Expected: REJECTED**
-
-```bash
-curl -s -X POST http://127.0.0.1:8000/invoke \
-  -H "Content-Type: application/json" \
-  -d '{"mode": "NUMERIC_BOUND_VIOLATION"}'
-```
-
-Expected response (400): `{"status":"rejected","reason":"..."}` (e.g. confidence &gt; 1.0).
-
----
-
-### Example 6 — Malformed JSON
-
-**Expected: REJECTED** (before schema validation)
-
-```bash
-curl -s -X POST http://127.0.0.1:8000/invoke \
-  -H "Content-Type: application/json" \
-  -d '{"mode": "MALFORMED_JSON"}'
-```
-
-Expected response (400): `{"status":"rejected","reason":"..."}` (JSON decode error).
 
 ---
 
@@ -184,89 +151,28 @@ pip install -r requirements.txt
 pytest tests/ -v
 ```
 
-Tests in `test_structural_gate.py` and `test_strict_structural_gate.py`: valid passes; enum violation, extra field, missing field, numeric bound, malformed JSON, string/int instead of float, enum case variation, and unknown mode each fail with 400 and `status: rejected`.
+---
 
-## Development
+## Roadmap
 
-Format code:
+This prototype focuses exclusively on structural validation.
+Future exploration may include:
 
-```bash
-ruff format .
-```
+- Multi-schema support (contract per workflow).
+- Structured output prompting integration.
+- Typed client SDK generation from schema.
+- Integration with execution workflows (e.g., reject → retry policy at application layer).
 
-Lint code:
-
-```bash
-ruff check .
-```
-
-## Continuous Integration
-
-All pull requests and pushes to `main` run:
-
-- `ruff check .`
-- `ruff format --check .`
-- `pytest`
-
-via GitHub Actions (Python 3.11).
-
-## What the Structural Gate Guarantees
-
-This prototype intentionally uses a single fixed schema (SentimentResult) to demonstrate deterministic structural enforcement.
-
-- **Structural correctness** — JSON is well-formed and matches the expected shape.
-- **Type correctness** — Types (string, float, enum) match the schema exactly; no coercion (e.g. string or int to float is rejected).
-- **Field presence** — All required fields are present.
-- **Enum membership** — Values are in the allowed set with exact, case-sensitive matching (no fuzzy matching).
-- **No unexpected fields** — `extra="forbid"` so additional keys are rejected.
-- **No simulator fallback** — Unknown modes return 400; no default to valid output.
-
-## What It Does NOT Guarantee
-
-- Factual correctness  
-- Truthfulness  
-- Business rule validity  
-- Intent alignment  
-
-**A perfectly structured lie passes the structural gate.**
+The gate itself will remain a deterministic boundary. Retry logic, fallback policy, and business rules belong outside this layer.
 
 ---
 
-## Determinism & Boundary Notes
+## Contributing
 
-**Review environment.** Reviewed under Python 3.11 with Ruff and Pytest as declared in requirements.txt.
-
-**No outbound network calls in validation path.** The validation path (request → simulator → `validate(raw)` → response) performs no outbound network calls. Parsing and schema checks are local only; determinism does not depend on network state.
-
-**FastAPI Error Semantics**
-
-- Structural validation failures → HTTP 400
-- Request model validation failures (e.g. invalid InvokeRequest) → HTTP 422
-
-Both responses are deterministic and occur before business execution.
-
-These behaviors do not weaken the deterministic boundary claim; they reinforce strict input and output validation at defined layers.
-
-**Out-of-Scope Production Controls**
-
-This prototype focuses strictly on deterministic structural enforcement (Layer 1).
-
-The following production-grade controls are intentionally out of scope:
-
-- Dependency version pinning (exact version locking)
-- Supply-chain integrity verification
-- Static Application Security Testing (SAST)
-- Dynamic Application Security Testing (DAST)
-- Enforced code coverage thresholds
-
-These controls are important in production systems but are not required for a minimal structural boundary demonstration.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests, and pull request guidelines. Security issues: see [SECURITY.md](SECURITY.md); do not report them as public issues.
 
 ---
 
-## Open Source Readiness
+## License
 
-This project is MIT licensed. Contributions are welcome; please see [CONTRIBUTING.md](CONTRIBUTING.md). Security issues must be reported in accordance with [SECURITY.md](SECURITY.md)—do not file them as public issues.
-
----
-
-This repository demonstrates a pure deterministic structural boundary and nothing beyond it.
+MIT.
