@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/manasaranjanbehera/llm-structural-gate/actions/workflows/ci.yml/badge.svg)
 
-Minimal runnable prototype that enforces **structural constraint as a deterministic contract boundary**: no output crosses the boundary unless it is valid against the schema. The schema is the source of truth; the LLM is simulated as an untrusted probabilistic client. This project implements **structural validation only** (no semantic validation, retries, business logic, or resilience modeling).
+A minimal runnable prototype demonstrating **structural constraint as a deterministic contract boundary**: no output crosses the boundary unless it is valid against the schema. The schema is the source of truth; the LLM is simulated as an untrusted probabilistic client. This project implements **structural validation only** (no semantic validation, retries, business logic, or resilience modeling).
 
 **Strict structural hardening:**
 
@@ -232,25 +232,34 @@ This prototype intentionally uses a single fixed schema (SentimentResult) to dem
 
 ---
 
-## Audit metadata and behaviour
+## Determinism & Boundary Notes
 
-**Audit environment.** Audit performed on local read-only checkout, Python 3.11; Ruff and Pytest as declared in `requirements.txt`. That adds reproducibility metadata.
+**Review environment.** Reviewed under Python 3.11 with Ruff and Pytest as declared in requirements.txt.
 
 **No outbound network calls in validation path.** The validation path (request → simulator → `validate(raw)` → response) performs no outbound network calls. Parsing and schema checks are local only; determinism does not depend on network state.
 
-**FastAPI error handling.**  
-- **ValidationFailure → HTTP 400:** In `main.py`, when `validate(raw)` returns a `ValidationFailure`, the handler returns `JSONResponse(status_code=400, content={"status": "rejected", "reason": reason})`. All schema and JSON-parse failures are mapped to 400.  
-- **Request body errors → HTTP 422:** Invalid request bodies (e.g. missing `mode`, wrong types for `InvokeRequest`) are validated by FastAPI/Pydantic before `invoke()` runs; FastAPI returns 422 Unprocessable Entity for those.  
-- **Deterministic boundary:** Both 400 (gate rejection) and 422 (request validation) are deterministic. They do not violate the deterministic boundary claim; 422 is input validation at the API boundary.
+**FastAPI Error Semantics**
 
-**Residual risks.** For completeness, enterprise-style audits might note:
+- Structural validation failures → HTTP 400
+- Request model validation failures (e.g. invalid InvokeRequest) → HTTP 422
 
-- No dependency pinning (only minimum versions in `requirements.txt`)
-- No supply-chain verification
-- No SAST/DAST
-- No coverage measurement threshold
+Both responses are deterministic and occur before business execution.
 
-Not required for this small repo, but improves audit completeness.
+These behaviors do not weaken the deterministic boundary claim; they reinforce strict input and output validation at defined layers.
+
+**Out-of-Scope Production Controls**
+
+This prototype focuses strictly on deterministic structural enforcement (Layer 1).
+
+The following production-grade controls are intentionally out of scope:
+
+- Dependency version pinning (exact version locking)
+- Supply-chain integrity verification
+- Static Application Security Testing (SAST)
+- Dynamic Application Security Testing (DAST)
+- Enforced code coverage thresholds
+
+These controls are important in production systems but are not required for a minimal structural boundary demonstration.
 
 ---
 
@@ -260,4 +269,4 @@ This project is MIT licensed. Contributions are welcome; please see [CONTRIBUTIN
 
 ---
 
-No try/except that hides validation failure, no default values added silently, no coercion, no fuzzy enum matching, no semantic checks, no retry loop. This is a pure deterministic structural gate.
+This repository demonstrates a pure deterministic structural boundary and nothing beyond it.
